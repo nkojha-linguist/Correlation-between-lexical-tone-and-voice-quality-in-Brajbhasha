@@ -1,0 +1,156 @@
+###########################################
+#####      PHONATION-Analysis         #####
+###########################################
+
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(emmeans)
+library(cowplot)
+library(openxlsx)
+library(readxl)
+
+# --- 1. DATA LOADING ---
+sheet_name <- "Sheet1"
+data_path <- "D:\\PHONATION DATA.xlsx"
+data <- readxl::read_excel(data_path, sheet = sheet_name)
+
+# Define the 10 acoustic measures based on your spreadsheet headers
+measures_to_analyze <- c(
+  "H1H2", "H2H4", "H1A1", "H1A2", "H1A3", 
+  "H1cH2c", "H2cH4c", "H1cA1", "H1cA2", "H1cA3"
+)
+
+# Define the translation map for Academic Labels (Used for Plots and Excel Sheets)
+label_map <- c(
+  "H1H2" = "H1-H2", "H2H4" = "H2-H4", "H1A1" = "H1-A1", 
+  "H1A2" = "H1-A2", "H1A3" = "H1-A3", "H1cH2c" = "H1*-H2*", 
+  "H2cH4c" = "H2*-H4*", "H1cA1" = "H1*-A1", "H1cA2" = "H1*-A2", 
+  "H1cA3" = "H1*-A3"
+)
+
+# --- 2. DATA PREPARATION ---
+contour_data <- data %>%
+  select(Dataset, Tone, Subject, Pair, 
+         matches("^(H1H2|H2H4|H1A1|H1A2|H1A3|H1cH2c|H2cH4c|H1cA1|H1cA2|H1cA3)_p\\d")) %>%
+  pivot_longer(
+    cols = matches("_p\\d"), 
+    names_to = "Measure_Timepoint", 
+    values_to = "Value"
+  ) %>%
+  separate(Measure_Timepoint, into = c("Measure", "Timepoint"), sep = "_(?=p)", remove = TRUE) %>%
+  mutate(
+    Timepoint = as.numeric(gsub("p", "", Timepoint)),
+    Tone = factor(Tone)
+  ) %>%
+  drop_na(Value)
+
+# --- 3. CONTOUR PLOT & STATS FUNCTION ---
+create_contour_plot <- function(measure_name, data) {
+  
+  # Get the academic label for titles/axes
+  pretty_name <- label_map[measure_name]
+  
+  measure_data <- data %>% filter(Measure == measure_name)
+  significance_results <- data.frame()
+  
+  for (dataset in unique(measure_data$Dataset)) {
+    for (time_pt in 1:9) {
+      time_data <- measure_data %>% 
+        filter(Dataset == dataset, Timepoint == time_pt)
+      
+      if (nrow(time_data) > 0 && length(unique(time_data$Tone)) == 2) {
+        tryCatch({
+          model <- lmer(Value ~ Tone + (1 | Subject), data = time_data, REML = FALSE)
+          model_summary <- summary(model)
+          tone_pvalue <- model_summary$coefficients[2, 5] 
+          low_mean <- mean(time_data$Value[time_data$Tone == "Low"], na.rm = TRUE)
+          
+          sig_result <- data.frame(
+            Dataset = dataset, Timepoint = time_pt, 
+            p_value = tone_pvalue, Low_Mean = low_mean, 
+            stringsAsFactors = FALSE
+          )
+          significance_results <- bind_rows(significance_results, sig_result)
+        }, error = function(e) {
+          cat("Model failed for", measure_name, "Dataset:", dataset, "Point:", time_pt, "\n")
+        })
+      }
+    }
+  }
+  
+  significance_results <- significance_results %>%
+    mutate(
+      Significance = case_when(p_value < 0.001 ~ "***", p_value < 0.01 ~ "**", p_value < 0.05 ~ "*", p_value < 0.1 ~ ".", TRUE ~ "ns"),
+      Shape = case_when(p_value < 0.001 ~ 24, p_value < 0.01 ~ 23, p_value < 0.05 ~ 22, p_value < 0.1 ~ 21, TRUE ~ NA_real_),
+      Size = case_when(p_value < 0.001 ~ 4, p_value < 0.01 ~ 3.5, p_value < 0.05 ~ 3, p_value < 0.1 ~ 2.5, TRUE ~ NA_real_),
+      Symbol_Position = Low_Mean + 0.1 * abs(Low_Mean)
+    )
+  
+  sig_symbols <- significance_results %>% filter(p_value < 0.1)
+  plot_data <- measure_data %>%
+    group_by(Dataset, Timepoint, Tone) %>%
+    summarise(Mean_Value = mean(Value, na.rm = TRUE), SE = sd(Value, na.rm = TRUE) / sqrt(n()), .groups = "drop")
+  
+  p <- ggplot(plot_data, aes(x = Timepoint, y = Mean_Value, color = Tone, group = Tone)) +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 2.5) +
+    geom_errorbar(aes(ymin = Mean_Value - SE, ymax = Mean_Value + SE), width = 0.3, alpha = 0.7) +
+    geom_point(data = sig_symbols, aes(x = Timepoint, y = Symbol_Position), 
+               shape = sig_symbols$Shape, size = sig_symbols$Size, 
+               color = "black", fill = "black", show.legend = FALSE, inherit.aes = FALSE) +
+    facet_wrap(~ Dataset, scales = "free_y", ncol = 4) +
+    scale_x_continuous(breaks = 1:9, labels = paste0("p", 1:9)) +
+    scale_color_manual(values = c("Neutral" = "red", "Low" = "turquoise3")) +
+    labs(title = paste("Contour Analysis:", pretty_name), 
+         x = "Time Point", 
+         y = paste(pretty_name, "Value"), 
+         color = "Tone") +
+    theme_minimal(base_size = 12) +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "top")
+  
+  final_plot <- plot_grid(p, 
+                          ggdraw() + draw_label("Significance: ▲p<0.001 ◆p<0.01 ■p<0.05 ●p<0.1", size = 10, color = "gray40"), 
+                          ncol = 1, rel_heights = c(10, 1))
+  
+  print(final_plot)
+  ggsave(paste0("Contour_Plot_", measure_name, ".png"), final_plot, width = 14, height = 10, dpi = 300)
+  
+  return(significance_results)
+}
+
+# --- 4. EXECUTION LOOP ---
+cat("\nStarting Contour Analysis for 10 Measures...\n")
+results_list <- list()
+for (m in measures_to_analyze) {
+  cat("Processing:", m, "...\n")
+  results_list[[m]] <- create_contour_plot(m, contour_data)
+}
+
+# --- 5. SAVE RESULTS TO EXCEL (WITH CHARACTER FILTERING) ---
+cat("\nSaving all significance results to Excel...\n")
+wb <- createWorkbook()
+
+for (m in names(results_list)) {
+  # 1. Get the Academic Label (e.g., "H1*-H2*")
+  pretty_name <- label_map[m]
+  
+  # 2. CREATE EXCEL-SAFE NAME: Replace asterisks with 'c'
+  safe_sheet_name <- gsub("\\*", "c", pretty_name)
+  
+  # 3. Ensure length is within 31 chars
+  safe_sheet_name <- substr(safe_sheet_name, 1, 31)
+  
+  cat("Exporting sheet:", safe_sheet_name, "\n")
+  
+  addWorksheet(wb, safe_sheet_name)
+  writeData(wb, safe_sheet_name, results_list[[m]])
+}
+
+# Save the file
+save_path <- "D:/Phonation_Significance_Results.xlsx"
+saveWorkbook(wb, save_path, overwrite = TRUE)
+
+cat("\nAnalysis Complete! One Excel file and 10 figures exported successfully.\n")
