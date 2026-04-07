@@ -1,8 +1,9 @@
-###########################################
-#####      PHONATION-Analysis         #####
-###########################################
+############################################################
+#####      PHONATION-Analysis (pre-hoc INTEGRATED)     #####
+############################################################
 
-# Load necessary libraries
+
+# --- 0. LOAD LIBRARIES ---
 library(ggplot2)
 library(dplyr)
 library(tidyr)
@@ -12,19 +13,77 @@ library(emmeans)
 library(cowplot)
 library(openxlsx)
 library(readxl)
+library(purrr)
 
 # --- 1. DATA LOADING ---
 sheet_name <- "Sheet1"
-data_path <- "D:\\PHONATION DATA.xlsx"
+data_path <- "D:\\PHONATION OUTPUTS.xlsx"
 data <- readxl::read_excel(data_path, sheet = sheet_name)
 
-# Define the 10 acoustic measures
+# Ensure 'Tone' is a factor and set 'Neutral' as the reference level
+data <- data %>%
+  mutate(Tone = factor(Tone, levels = c("Neutral", "Low")))
+
+# --- 2. PRE-HOC ANALYSIS (PROLOGUE): F0 AND DURATION BASELINE ---
+cat("\n--- STARTING PRE-HOC ANALYSIS (F0 & DURATION) ---\n")
+
+# Function to extract Tone effect from a model
+extract_tone_effect <- function(model, dataset_name, dependent_var) {
+  fe <- summary(model)$coefficients
+  # Extract the ToneLow row (Since Neutral is the reference)
+  tone_row <- fe[grepl("ToneLow", rownames(fe)), ]
+  
+  data.frame(
+    Dataset = dataset_name,
+    DV = dependent_var,
+    Estimate = tone_row[1],           # Coefficient for ToneLow
+    Std_Error = tone_row[2],          # Standard error
+    df = tone_row[3],                 # Degrees of freedom
+    t_value = tone_row[4],            # t-value
+    p_value = tone_row[5],            # p-value
+    Significance = case_when(
+      tone_row[5] < 0.001 ~ "***",
+      tone_row[5] < 0.01 ~ "**",
+      tone_row[5] < 0.05 ~ "*",
+      tone_row[5] < 0.1 ~ ".",
+      TRUE ~ "ns"
+    )
+  )
+}
+
+# Run F0 and Duration models across all datasets
+pre_hoc_detailed <- bind_rows(
+  # F0 Models
+  data %>% split(.$Dataset) %>% map_dfr(~ {
+    model <- lmer(F0 ~ Tone + (1|Subject), data = .x)
+    extract_tone_effect(model, unique(.x$Dataset), "F0")
+  }),
+  # Duration Models
+  data %>% split(.$Dataset) %>% map_dfr(~ {
+    model <- lmer(Duration ~ Tone + (1|Subject), data = .x)
+    extract_tone_effect(model, unique(.x$Dataset), "Duration")
+  })
+)
+
+# Create Wide Summary for easier viewing
+pre_hoc_wide <- pre_hoc_detailed %>%
+  select(Dataset, DV, Estimate, Significance) %>%
+  pivot_wider(names_from = DV, 
+              values_from = c(Estimate, Significance),
+              names_glue = "{DV}_{.value}")
+
+# Print to console
+cat("\nDetailed Baseline Table:\n")
+print(pre_hoc_detailed, row.names = FALSE)
+
+# --- 3. PHONATION DATA PREPARATION (CONTOUR ANALYSIS) ---
+cat("\n--- PREPARING GRANULAR PHONATION CONTOUR DATA ---\n")
+
 measures_to_analyze <- c(
   "H1H2", "H2H4", "H1A1", "H1A2", "H1A3", 
   "H1cH2c", "H2cH4c", "H1cA1", "H1cA2", "H1cA3"
 )
 
-# Translation map for Academic Labels
 label_map <- c(
   "H1H2" = "H1-H2", "H2H4" = "H2-H4", "H1A1" = "H1-A1", 
   "H1A2" = "H1-A2", "H1A3" = "H1-A3", "H1cH2c" = "H1*-H2*", 
@@ -32,7 +91,6 @@ label_map <- c(
   "H1cA3" = "H1*-A3"
 )
 
-# --- 2. DATA PREPARATION ---
 contour_data <- data %>%
   select(Dataset, Tone, Subject, Pair, 
          matches("^(H1H2|H2H4|H1A1|H1A2|H1A3|H1cH2c|H2cH4c|H1cA1|H1cA2|H1cA3)_p\\d")) %>%
@@ -43,16 +101,15 @@ contour_data <- data %>%
   ) %>%
   separate(Measure_Timepoint, into = c("Measure", "Timepoint"), sep = "_(?=p)", remove = TRUE) %>%
   mutate(
-    Timepoint = as.numeric(gsub("p", "", Timepoint)),
-    Tone = factor(Tone)
+    Timepoint = as.numeric(gsub("p", "", Timepoint))
   ) %>%
   drop_na(Value)
 
-# --- 3. CONTOUR PLOT & STATS FUNCTION ---
-create_contour_plot <- function(measure_name, data) {
+# --- 4. CONTOUR PLOT & GRANULAR STATS FUNCTION ---
+create_contour_plot <- function(measure_name, data_input) {
   
   pretty_name <- label_map[measure_name]
-  measure_data <- data %>% filter(Measure == measure_name)
+  measure_data <- data_input %>% filter(Measure == measure_name)
   significance_results <- data.frame()
   
   for (dataset in unique(measure_data$Dataset)) {
@@ -66,16 +123,13 @@ create_contour_plot <- function(measure_name, data) {
           model_summary <- summary(model)
           tone_pvalue <- model_summary$coefficients[2, 5] 
           
-          # CALCULATING MEANS FOR BOTH TONES
           low_mean <- mean(time_data$Value[time_data$Tone == "Low"], na.rm = TRUE)
           neutral_mean <- mean(time_data$Value[time_data$Tone == "Neutral"], na.rm = TRUE)
           diff_val <- low_mean - neutral_mean
           
           sig_result <- data.frame(
-            Dataset = dataset, 
-            Timepoint = time_pt, 
-            p_value = tone_pvalue, 
-            Low_Mean = low_mean, 
+            Dataset = dataset, Timepoint = time_pt, 
+            p_value = tone_pvalue, Low_Mean = low_mean, 
             Neutral_Mean = neutral_mean,
             Difference_Low_Minus_Neutral = diff_val,
             stringsAsFactors = FALSE
@@ -97,11 +151,11 @@ create_contour_plot <- function(measure_name, data) {
     )
   
   sig_symbols <- significance_results %>% filter(p_value < 0.1)
-  plot_data <- measure_data %>%
+  plot_summary <- measure_data %>%
     group_by(Dataset, Timepoint, Tone) %>%
     summarise(Mean_Value = mean(Value, na.rm = TRUE), SE = sd(Value, na.rm = TRUE) / sqrt(n()), .groups = "drop")
   
-  p <- ggplot(plot_data, aes(x = Timepoint, y = Mean_Value, color = Tone, group = Tone)) +
+  p <- ggplot(plot_summary, aes(x = Timepoint, y = Mean_Value, color = Tone, group = Tone)) +
     geom_line(linewidth = 1.2) +
     geom_point(size = 2.5) +
     geom_errorbar(aes(ymin = Mean_Value - SE, ymax = Mean_Value + SE), width = 0.3, alpha = 0.7) +
@@ -112,9 +166,7 @@ create_contour_plot <- function(measure_name, data) {
     scale_x_continuous(breaks = 1:9, labels = paste0("p", 1:9)) +
     scale_color_manual(values = c("Neutral" = "red", "Low" = "turquoise3")) +
     labs(title = paste("Contour Analysis:", pretty_name), 
-         x = "Time Point", 
-         y = paste(pretty_name, "Value"), 
-         color = "Tone") +
+         x = "Time Point", y = paste(pretty_name, "Value"), color = "Tone") +
     theme_minimal(base_size = 12) +
     theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "top")
   
@@ -128,30 +180,36 @@ create_contour_plot <- function(measure_name, data) {
   return(significance_results)
 }
 
-# --- 4. EXECUTION LOOP ---
-cat("\nStarting Contour Analysis for 10 Measures...\n")
+# --- 5. EXECUTION LOOP ---
+cat("\nStarting Phonation Contour Analysis for 10 Measures...\n")
 results_list <- list()
 for (m in measures_to_analyze) {
   cat("Processing:", m, "...\n")
   results_list[[m]] <- create_contour_plot(m, contour_data)
 }
 
-# --- 5. SAVE RESULTS TO EXCEL ---
-cat("\nSaving all significance results to Excel...\n")
+# --- 6. SAVE COMPREHENSIVE RESULTS TO EXCEL ---
+cat("\nSaving all analytical outputs to Excel...\n")
 wb <- createWorkbook()
 
+# EXPORT BASELINE SHEETS (THE PROLOGUE)
+addWorksheet(wb, "Baseline_Detailed_Stats")
+writeData(wb, "Baseline_Detailed_Stats", pre_hoc_detailed)
+
+addWorksheet(wb, "Baseline_Summary_Wide")
+writeData(wb, "Baseline_Summary_Wide", pre_hoc_wide)
+
+# EXPORT PHONATION SHEETS
 for (m in names(results_list)) {
   pretty_name <- label_map[m]
   safe_sheet_name <- gsub("\\*", "c", pretty_name)
   safe_sheet_name <- substr(safe_sheet_name, 1, 31)
   
-  cat("Exporting sheet:", safe_sheet_name, "\n")
-  
   addWorksheet(wb, safe_sheet_name)
   writeData(wb, safe_sheet_name, results_list[[m]])
 }
 
-save_path <- "C:/Users/neete/Documents/Phonation_Significance_Results.xlsx"
+save_path <- "C:/Users/neete/Documents/Comprehensive_Tone_Phonation_Results.xlsx"
 saveWorkbook(wb, save_path, overwrite = TRUE)
 
-cat("\nAnalysis Complete! One Excel file and 10 figures exported successfully.\n")
+cat("\nDone! Baseline and Granular Phonation results saved successfully.\n")
