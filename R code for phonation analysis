@@ -18,13 +18,13 @@ sheet_name <- "Sheet1"
 data_path <- "D:\\PHONATION DATA.xlsx"
 data <- readxl::read_excel(data_path, sheet = sheet_name)
 
-# Define the 10 acoustic measures based on your spreadsheet headers
+# Define the 10 acoustic measures
 measures_to_analyze <- c(
   "H1H2", "H2H4", "H1A1", "H1A2", "H1A3", 
   "H1cH2c", "H2cH4c", "H1cA1", "H1cA2", "H1cA3"
 )
 
-# Define the translation map for Academic Labels (Used for Plots and Excel Sheets)
+# Translation map for Academic Labels
 label_map <- c(
   "H1H2" = "H1-H2", "H2H4" = "H2-H4", "H1A1" = "H1-A1", 
   "H1A2" = "H1-A2", "H1A3" = "H1-A3", "H1cH2c" = "H1*-H2*", 
@@ -51,9 +51,7 @@ contour_data <- data %>%
 # --- 3. CONTOUR PLOT & STATS FUNCTION ---
 create_contour_plot <- function(measure_name, data) {
   
-  # Get the academic label for titles/axes
   pretty_name <- label_map[measure_name]
-  
   measure_data <- data %>% filter(Measure == measure_name)
   significance_results <- data.frame()
   
@@ -67,11 +65,19 @@ create_contour_plot <- function(measure_name, data) {
           model <- lmer(Value ~ Tone + (1 | Subject), data = time_data, REML = FALSE)
           model_summary <- summary(model)
           tone_pvalue <- model_summary$coefficients[2, 5] 
+          
+          # CALCULATING MEANS FOR BOTH TONES
           low_mean <- mean(time_data$Value[time_data$Tone == "Low"], na.rm = TRUE)
+          neutral_mean <- mean(time_data$Value[time_data$Tone == "Neutral"], na.rm = TRUE)
+          diff_val <- low_mean - neutral_mean
           
           sig_result <- data.frame(
-            Dataset = dataset, Timepoint = time_pt, 
-            p_value = tone_pvalue, Low_Mean = low_mean, 
+            Dataset = dataset, 
+            Timepoint = time_pt, 
+            p_value = tone_pvalue, 
+            Low_Mean = low_mean, 
+            Neutral_Mean = neutral_mean,
+            Difference_Low_Minus_Neutral = diff_val,
             stringsAsFactors = FALSE
           )
           significance_results <- bind_rows(significance_results, sig_result)
@@ -130,18 +136,13 @@ for (m in measures_to_analyze) {
   results_list[[m]] <- create_contour_plot(m, contour_data)
 }
 
-# --- 5. SAVE RESULTS TO EXCEL (WITH CHARACTER FILTERING) ---
+# --- 5. SAVE RESULTS TO EXCEL ---
 cat("\nSaving all significance results to Excel...\n")
 wb <- createWorkbook()
 
 for (m in names(results_list)) {
-  # 1. Get the Academic Label (e.g., "H1*-H2*")
   pretty_name <- label_map[m]
-  
-  # 2. CREATE EXCEL-SAFE NAME: Replace asterisks with 'c'
   safe_sheet_name <- gsub("\\*", "c", pretty_name)
-  
-  # 3. Ensure length is within 31 chars
   safe_sheet_name <- substr(safe_sheet_name, 1, 31)
   
   cat("Exporting sheet:", safe_sheet_name, "\n")
@@ -150,8 +151,7 @@ for (m in names(results_list)) {
   writeData(wb, safe_sheet_name, results_list[[m]])
 }
 
-# Save the file
-save_path <- "D:/Phonation_Significance_Results.xlsx"
+save_path <- "C:/Users/neete/Documents/Phonation_Significance_Results.xlsx"
 saveWorkbook(wb, save_path, overwrite = TRUE)
 
 cat("\nAnalysis Complete! One Excel file and 10 figures exported successfully.\n")
