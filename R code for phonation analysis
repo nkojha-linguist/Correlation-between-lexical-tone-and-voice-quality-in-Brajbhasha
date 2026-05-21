@@ -18,7 +18,7 @@ library(performance)
 
 # --- 1. DATA LOADING ---
 sheet_name <- "Phase2 - Phonation"
-data_path <- "C:\\Users\\neete\\Desktop\\3rdCollection(Cleaned)\\JOURNAL04\\FRESH PHONATION OUTPUTS.xlsx"
+data_path <- "D:\\PHONATION DATA.xlsx"
 data <- readxl::read_excel(data_path, sheet = sheet_name)
 
 # Ensure 'Tone' is a factor with 'Neutral' as the reference level
@@ -416,7 +416,7 @@ sig_summary <- all_results_combined %>%
 addWorksheet(wb, "FDR_Significance_Counts")
 writeData(wb, "FDR_Significance_Counts", sig_summary)
 
-save_path <- "C:/Users/neete/Documents/Comprehensive_Tone_Phonation_Results_FDR.xlsx"
+save_path <- "D:/Comprehensive_Tone_Phonation_Results_FDR.xlsx"
 saveWorkbook(wb, save_path, overwrite = TRUE)
 
 cat("\nDone! Baseline and Granular Phonation results saved successfully.\n")
