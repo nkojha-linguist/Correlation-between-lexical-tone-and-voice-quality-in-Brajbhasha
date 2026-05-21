@@ -1,7 +1,6 @@
-############################################################
-#####      PHONATION-Analysis (pre-hoc INTEGRATED)     #####
-############################################################
-
+########################################################################################
+#####      TONE-PHONATION CORRELATION ANALYSIS: FINAL (pre-hoc INTEGRATED)         #####
+########################################################################################
 
 # --- 0. LOAD LIBRARIES ---
 library(ggplot2)
@@ -14,40 +13,72 @@ library(cowplot)
 library(openxlsx)
 library(readxl)
 library(purrr)
+library(r2glmm)
+library(performance)
 
 # --- 1. DATA LOADING ---
-sheet_name <- "Sheet1"
-data_path <- "D:\\PHONATION OUTPUTS.xlsx"
+sheet_name <- "Phase2 - Phonation"
+data_path <- "C:\\Users\\neete\\Desktop\\3rdCollection(Cleaned)\\JOURNAL04\\FRESH PHONATION OUTPUTS.xlsx"
 data <- readxl::read_excel(data_path, sheet = sheet_name)
 
-# Ensure 'Tone' is a factor and set 'Neutral' as the reference level
+# Ensure 'Tone' is a factor with 'Neutral' as the reference level
 data <- data %>%
   mutate(Tone = factor(Tone, levels = c("Neutral", "Low")))
 
-# --- 2. PRE-HOC ANALYSIS (PROLOGUE): F0 AND DURATION BASELINE ---
+# --- 2. PRE-HOC ANALYSIS (PROLOGUE): F0 AND DURATION RESULTS ---
 cat("\n--- STARTING PRE-HOC ANALYSIS (F0 & DURATION) ---\n")
 
-# Function to extract Tone effect from a model
-extract_tone_effect <- function(model, dataset_name, dependent_var) {
+# Function to extract Tone effect from a model with LRT and effect size
+extract_tone_effect <- function(model, null_model, dataset_name, dependent_var) {
   fe <- summary(model)$coefficients
-  # Extract the ToneLow row (Since Neutral is the reference)
+  # Extract the ToneLow row (Since 'Neutral' is the reference)
   tone_row <- fe[grepl("ToneLow", rownames(fe)), ]
+  
+  # Perform LRT
+  lrt_result <- anova(null_model, model)
+  lrt_pvalue <- lrt_result[["Pr(>Chisq)"]][2]
+  lrt_chisq <- lrt_result[["Chisq"]][2]
+  lrt_df <- lrt_result[["Df"]][2] - lrt_result[["Df"]][1]
+  
+  # Calculate effect size (semi-partial R² using r2glmm)
+  effect_size <- NA
+  tryCatch({
+    r2_result <- r2beta(model, method = 'kr', partial = TRUE)
+    effect_size <- r2_result[r2_result$Effect == "Tone", "Rsq"]
+    if (length(effect_size) == 0) effect_size <- NA
+  }, error = function(e) {
+    effect_size <- NA
+  })
+  
+  # Also compute marginal R² for the model
+  r2_marginal <- NA
+  tryCatch({
+    r2_marginal <- performance::r2_nakagawa(model, by_group = FALSE)$R2_marginal
+  }, error = function(e) {
+    r2_marginal <- NA
+  })
   
   data.frame(
     Dataset = dataset_name,
     DV = dependent_var,
-    Estimate = tone_row[1],           # Coefficient for ToneLow
-    Std_Error = tone_row[2],          # Standard error
-    df = tone_row[3],                 # Degrees of freedom
-    t_value = tone_row[4],            # t-value
-    p_value = tone_row[5],            # p-value
-    Significance = case_when(
-      tone_row[5] < 0.001 ~ "***",
-      tone_row[5] < 0.01 ~ "**",
-      tone_row[5] < 0.05 ~ "*",
-      tone_row[5] < 0.1 ~ ".",
-      TRUE ~ "ns"
-    )
+    Estimate = ifelse(length(tone_row) > 0, tone_row[1], NA),           # Coefficient for ToneLow
+    Std_Error = ifelse(length(tone_row) > 1, tone_row[2], NA),          # Standard error
+    df = ifelse(length(tone_row) > 2, tone_row[3], NA),                 # Degrees of freedom
+    t_value = ifelse(length(tone_row) > 3, tone_row[4], NA),            # t-value
+    p_value = ifelse(length(tone_row) > 4, tone_row[5], NA),            # p-value
+    LRT_Chisq = lrt_chisq,            # LRT Chi-square
+    LRT_df = lrt_df,                  # LRT degrees of freedom
+    LRT_p_value = lrt_pvalue,         # LRT p-value
+    Effect_Size_R2 = effect_size,     # Semi-partial R² for Tone
+    Marginal_R2 = r2_marginal,        # Marginal R² for full model
+    Significance = ifelse(length(tone_row) > 4,
+                          case_when(
+                            tone_row[5] < 0.001 ~ "***",
+                            tone_row[5] < 0.01 ~ "**",
+                            tone_row[5] < 0.05 ~ "*",
+                            tone_row[5] < 0.1 ~ ".",
+                            TRUE ~ "ns"
+                          ), NA)
   )
 }
 
@@ -55,21 +86,37 @@ extract_tone_effect <- function(model, dataset_name, dependent_var) {
 pre_hoc_detailed <- bind_rows(
   # F0 Models
   data %>% split(.$Dataset) %>% map_dfr(~ {
-    model <- lmer(F0 ~ Tone + (1|Subject), data = .x)
-    extract_tone_effect(model, unique(.x$Dataset), "F0")
+    model <- lmer(F0 ~ Tone + (1|Subject), data = .x, REML = FALSE)
+    null_model <- lmer(F0 ~ 1 + (1|Subject), data = .x, REML = FALSE)
+    extract_tone_effect(model, null_model, unique(.x$Dataset), "F0")
   }),
   # Duration Models
   data %>% split(.$Dataset) %>% map_dfr(~ {
-    model <- lmer(Duration ~ Tone + (1|Subject), data = .x)
-    extract_tone_effect(model, unique(.x$Dataset), "Duration")
+    model <- lmer(Duration ~ Tone + (1|Subject), data = .x, REML = FALSE)
+    null_model <- lmer(Duration ~ 1 + (1|Subject), data = .x, REML = FALSE)
+    extract_tone_effect(model, null_model, unique(.x$Dataset), "Duration")
   })
 )
 
+# Apply FDR correction for pre-hoc analysis (across all tests)
+pre_hoc_detailed <- pre_hoc_detailed %>%
+  mutate(
+    p_value_FDR = p.adjust(p_value, method = "fdr"),
+    LRT_p_value_FDR = p.adjust(LRT_p_value, method = "fdr"),
+    FDR_Significance = case_when(
+      p_value_FDR < 0.001 ~ "***",
+      p_value_FDR < 0.01 ~ "**",
+      p_value_FDR < 0.05 ~ "*",
+      p_value_FDR < 0.1 ~ ".",
+      TRUE ~ "ns"
+    )
+  )
+
 # Create Wide Summary for easier viewing
 pre_hoc_wide <- pre_hoc_detailed %>%
-  select(Dataset, DV, Estimate, Significance) %>%
+  dplyr::select(Dataset, DV, Estimate, p_value, p_value_FDR, LRT_p_value, LRT_p_value_FDR, Effect_Size_R2, Significance, FDR_Significance) %>%
   pivot_wider(names_from = DV, 
-              values_from = c(Estimate, Significance),
+              values_from = c(Estimate, p_value, p_value_FDR, LRT_p_value, LRT_p_value_FDR, Effect_Size_R2, Significance, FDR_Significance),
               names_glue = "{DV}_{.value}")
 
 # Print to console
@@ -92,8 +139,8 @@ label_map <- c(
 )
 
 contour_data <- data %>%
-  select(Dataset, Tone, Subject, Pair, 
-         matches("^(H1H2|H2H4|H1A1|H1A2|H1A3|H1cH2c|H2cH4c|H1cA1|H1cA2|H1cA3)_p\\d")) %>%
+  dplyr::select(Dataset, Tone, Subject, Pair, 
+                matches("^(H1H2|H2H4|H1A1|H1A2|H1A3|H1cH2c|H2cH4c|H1cA1|H1cA2|H1cA3)_p\\d")) %>%
   pivot_longer(
     cols = matches("_p\\d"), 
     names_to = "Measure_Timepoint", 
@@ -105,7 +152,7 @@ contour_data <- data %>%
   ) %>%
   drop_na(Value)
 
-# --- 4. CONTOUR PLOT & GRANULAR STATS FUNCTION ---
+# --- 4. CONTOUR PLOT & GRANULAR STATS FUNCTION (WITH LRT, EFFECT SIZE, AND FDR) ---
 create_contour_plot <- function(measure_name, data_input) {
   
   pretty_name <- label_map[measure_name]
@@ -119,17 +166,60 @@ create_contour_plot <- function(measure_name, data_input) {
       
       if (nrow(time_data) > 0 && length(unique(time_data$Tone)) == 2) {
         tryCatch({
+          # Fit full model (with Tone) and null model (without Tone)
           model <- lmer(Value ~ Tone + (1 | Subject), data = time_data, REML = FALSE)
+          null_model <- lmer(Value ~ 1 + (1 | Subject), data = time_data, REML = FALSE)
+          
+          # Model summary
           model_summary <- summary(model)
-          tone_pvalue <- model_summary$coefficients[2, 5] 
+          tone_pvalue <- model_summary$coefficients[2, 5]
+          tone_tvalue <- model_summary$coefficients[2, 4]
+          tone_estimate <- model_summary$coefficients[2, 1]
+          tone_se <- model_summary$coefficients[2, 2]
+          
+          # Likelihood Ratio Test
+          lrt_result <- anova(null_model, model)
+          lrt_chisq <- lrt_result[["Chisq"]][2]
+          lrt_df <- lrt_result[["Df"]][2] - lrt_result[["Df"]][1]
+          lrt_pvalue <- lrt_result[["Pr(>Chisq)"]][2]
+          
+          # Calculate effect size (semi-partial R² for Tone)
+          effect_size <- NA
+          tryCatch({
+            r2_result <- r2beta(model, method = 'kr', partial = TRUE)
+            effect_size <- r2_result[r2_result$Effect == "Tone", "Rsq"]
+            if (length(effect_size) == 0) effect_size <- NA
+          }, error = function(e) {
+            # If r2beta fails, compute Cohen's f approximation
+            f2 <- (tone_tvalue^2) / (tone_tvalue^2 + nrow(time_data) - 2)
+            effect_size <- f2 / (1 + f2)
+          })
+          
+          # Calculate marginal R² for the full model
+          marginal_r2 <- NA
+          tryCatch({
+            if (require(performance)) {
+              marginal_r2 <- performance::r2_nakagawa(model, by_group = FALSE)$R2_marginal
+            }
+          }, error = function(e) {})
           
           low_mean <- mean(time_data$Value[time_data$Tone == "Low"], na.rm = TRUE)
           neutral_mean <- mean(time_data$Value[time_data$Tone == "Neutral"], na.rm = TRUE)
           diff_val <- low_mean - neutral_mean
           
           sig_result <- data.frame(
-            Dataset = dataset, Timepoint = time_pt, 
-            p_value = tone_pvalue, Low_Mean = low_mean, 
+            Dataset = dataset, 
+            Timepoint = time_pt, 
+            Tone_Estimate = tone_estimate,
+            Tone_SE = tone_se,
+            Tone_tvalue = tone_tvalue,
+            p_value = tone_pvalue,
+            LRT_Chisq = lrt_chisq,
+            LRT_df = lrt_df,
+            LRT_p_value = lrt_pvalue,
+            Effect_Size_R2 = effect_size,
+            Marginal_R2 = marginal_r2,
+            Low_Mean = low_mean, 
             Neutral_Mean = neutral_mean,
             Difference_Low_Minus_Neutral = diff_val,
             stringsAsFactors = FALSE
@@ -137,27 +227,80 @@ create_contour_plot <- function(measure_name, data_input) {
           significance_results <- bind_rows(significance_results, sig_result)
         }, error = function(e) {
           cat("Model failed for", measure_name, "Dataset:", dataset, "Point:", time_pt, "\n")
+          cat("Error:", e$message, "\n")
         })
       }
     }
   }
   
-  significance_results <- significance_results %>%
-    mutate(
-      Significance = case_when(p_value < 0.001 ~ "***", p_value < 0.01 ~ "**", p_value < 0.05 ~ "*", p_value < 0.1 ~ ".", TRUE ~ "ns"),
-      Shape = case_when(p_value < 0.001 ~ 24, p_value < 0.01 ~ 23, p_value < 0.05 ~ 22, p_value < 0.1 ~ 21, TRUE ~ NA_real_),
-      Size = case_when(p_value < 0.001 ~ 4, p_value < 0.01 ~ 3.5, p_value < 0.05 ~ 3, p_value < 0.1 ~ 2.5, TRUE ~ NA_real_),
-      Symbol_Position = Low_Mean + 0.1 * abs(Low_Mean)
-    )
+  # Apply FDR correction separately for each dataset within the measure
+  # This controls false discovery rate across the 9 time points for each dataset
+  if (nrow(significance_results) > 0) {
+    significance_results <- significance_results %>%
+      group_by(Dataset) %>%
+      mutate(
+        p_value_FDR = p.adjust(p_value, method = "fdr"),
+        LRT_p_value_FDR = p.adjust(LRT_p_value, method = "fdr")
+      ) %>%
+      ungroup() %>%
+      mutate(
+        Significance = case_when(
+          p_value < 0.001 ~ "***", 
+          p_value < 0.01 ~ "**", 
+          p_value < 0.05 ~ "*", 
+          p_value < 0.1 ~ ".", 
+          TRUE ~ "ns"
+        ),
+        FDR_Significance = case_when(
+          p_value_FDR < 0.001 ~ "***",
+          p_value_FDR < 0.01 ~ "**",
+          p_value_FDR < 0.05 ~ "*",
+          p_value_FDR < 0.1 ~ ".",
+          TRUE ~ "ns"
+        ),
+        LRT_Significance = case_when(
+          LRT_p_value < 0.001 ~ "***", 
+          LRT_p_value < 0.01 ~ "**", 
+          LRT_p_value < 0.05 ~ "*", 
+          LRT_p_value < 0.1 ~ ".", 
+          TRUE ~ "ns"
+        ),
+        LRT_FDR_Significance = case_when(
+          LRT_p_value_FDR < 0.001 ~ "***",
+          LRT_p_value_FDR < 0.01 ~ "**",
+          LRT_p_value_FDR < 0.05 ~ "*",
+          LRT_p_value_FDR < 0.1 ~ ".",
+          TRUE ~ "ns"
+        ),
+        Shape = case_when(
+          p_value_FDR < 0.001 ~ 24,        # Using FDR-corrected values for plotting
+          p_value_FDR < 0.01 ~ 23,
+          p_value_FDR < 0.05 ~ 22,
+          p_value_FDR < 0.1 ~ 21,
+          TRUE ~ NA_real_
+        ),
+        Size = case_when(
+          p_value_FDR < 0.001 ~ 3,
+          p_value_FDR < 0.01 ~ 2.8,
+          p_value_FDR < 0.05 ~ 2.2,
+          p_value_FDR < 0.1 ~ 2,
+          TRUE ~ NA_real_
+        ),
+        Symbol_Position = Low_Mean + 0.1 * abs(Low_Mean)
+      )
+  }
   
-  sig_symbols <- significance_results %>% filter(p_value < 0.1)
+  # Plotting (using FDR-corrected significance markers)
+  sig_symbols <- significance_results %>% filter(p_value_FDR < 0.1)
   plot_summary <- measure_data %>%
     group_by(Dataset, Timepoint, Tone) %>%
-    summarise(Mean_Value = mean(Value, na.rm = TRUE), SE = sd(Value, na.rm = TRUE) / sqrt(n()), .groups = "drop")
+    summarise(Mean_Value = mean(Value, na.rm = TRUE), 
+              SE = sd(Value, na.rm = TRUE) / sqrt(n()), 
+              .groups = "drop")
   
   p <- ggplot(plot_summary, aes(x = Timepoint, y = Mean_Value, color = Tone, group = Tone)) +
-    geom_line(linewidth = 1.2) +
-    geom_point(size = 2.5) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
     geom_errorbar(aes(ymin = Mean_Value - SE, ymax = Mean_Value + SE), width = 0.3, alpha = 0.7) +
     geom_point(data = sig_symbols, aes(x = Timepoint, y = Symbol_Position), 
                shape = sig_symbols$Shape, size = sig_symbols$Size, 
@@ -166,16 +309,20 @@ create_contour_plot <- function(measure_name, data_input) {
     scale_x_continuous(breaks = 1:9, labels = paste0("p", 1:9)) +
     scale_color_manual(values = c("Neutral" = "red", "Low" = "turquoise3")) +
     labs(title = paste("Contour Analysis:", pretty_name), 
-         x = "Time Point", y = paste(pretty_name, "Value"), color = "Tone") +
+         x = "Time Point", y = paste(pretty_name, "Value"), color = "Tone",
+         caption = "Significance markers based on FDR-corrected p-values") +
     theme_minimal(base_size = 12) +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "top")
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"), 
+          legend.position = "top",
+          plot.caption = element_text(hjust = 0.5, size = 8, color = "gray40"))
   
   final_plot <- plot_grid(p, 
-                          ggdraw() + draw_label("Significance: ▲p<0.001 ◆p<0.01 ■p<0.05 ●p<0.1", size = 10, color = "gray40"), 
+                          ggdraw() + draw_label("Significance (FDR-corrected): ▲p<0.001 ◆p<0.01 ■p<0.05 ●p<0.1", 
+                                                size = 12, color = "gray40"), 
                           ncol = 1, rel_heights = c(10, 1))
   
   print(final_plot)
-  ggsave(paste0("Contour_Plot_", measure_name, ".png"), final_plot, width = 14, height = 10, dpi = 300)
+  ggsave(paste0("Contour_Plot_", measure_name, "_FDR.png"), final_plot, width = 14, height = 10, dpi = 300)
   
   return(significance_results)
 }
@@ -199,17 +346,83 @@ writeData(wb, "Baseline_Detailed_Stats", pre_hoc_detailed)
 addWorksheet(wb, "Baseline_Summary_Wide")
 writeData(wb, "Baseline_Summary_Wide", pre_hoc_wide)
 
-# EXPORT PHONATION SHEETS
+# EXPORT PHONATION SHEETS (now with LRT, effect size, and FDR columns)
 for (m in names(results_list)) {
   pretty_name <- label_map[m]
   safe_sheet_name <- gsub("\\*", "c", pretty_name)
   safe_sheet_name <- substr(safe_sheet_name, 1, 31)
   
-  addWorksheet(wb, safe_sheet_name)
-  writeData(wb, safe_sheet_name, results_list[[m]])
+  if (nrow(results_list[[m]]) > 0) {
+    addWorksheet(wb, safe_sheet_name)
+    writeData(wb, safe_sheet_name, results_list[[m]])
+    
+    # Conditional formatting for FDR-corrected p-values
+    p_col <- which(names(results_list[[m]]) == "p_value_FDR")
+    lrt_col <- which(names(results_list[[m]]) == "LRT_p_value_FDR")
+    
+    if (length(p_col) > 0) {
+      conditionalFormatting(wb, safe_sheet_name, 
+                            cols = p_col, 
+                            rows = 2:(nrow(results_list[[m]]) + 1),
+                            rule = "<0.05",
+                            style = createStyle(bgFill = "#FFFF00"))
+    }
+    
+    if (length(lrt_col) > 0) {
+      conditionalFormatting(wb, safe_sheet_name, 
+                            cols = lrt_col, 
+                            rows = 2:(nrow(results_list[[m]]) + 1),
+                            rule = "<0.05",
+                            style = createStyle(bgFill = "#FFCC99"))
+    }
+    
+    # Also add formatting for uncorrected p-values for comparison
+    p_uncorr_col <- which(names(results_list[[m]]) == "p_value")
+    if (length(p_uncorr_col) > 0) {
+      conditionalFormatting(wb, safe_sheet_name, 
+                            cols = p_uncorr_col, 
+                            rows = 2:(nrow(results_list[[m]]) + 1),
+                            rule = "<0.05",
+                            style = createStyle(bgFill = "#E6E6FA"))  # Lavender for uncorrected
+    }
+  } else {
+    cat("Warning: No results for", m, "\n")
+  }
 }
 
-save_path <- "C:/Users/neete/Documents/Comprehensive_Tone_Phonation_Results.xlsx"
+# Create a summary sheet with FDR results across all measures
+cat("\nCreating FDR summary sheet...\n")
+
+# Combine all results into one dataframe for summary
+all_results_combined <- bind_rows(results_list, .id = "Measure") %>%
+  dplyr::select(Measure, Dataset, Timepoint, p_value, p_value_FDR, LRT_p_value, LRT_p_value_FDR, 
+                Effect_Size_R2, Significance, FDR_Significance)
+
+addWorksheet(wb, "FDR_Summary_All_Measures")
+writeData(wb, "FDR_Summary_All_Measures", all_results_combined)
+
+# Count significant findings before and after FDR
+sig_summary <- all_results_combined %>%
+  group_by(Measure, Dataset) %>%
+  summarise(
+    N_Timepoints = n(),
+    Significant_raw = sum(p_value < 0.05, na.rm = TRUE),
+    Significant_FDR = sum(p_value_FDR < 0.05, na.rm = TRUE),
+    LRT_Significant_raw = sum(LRT_p_value < 0.05, na.rm = TRUE),
+    LRT_Significant_FDR = sum(LRT_p_value_FDR < 0.05, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+addWorksheet(wb, "FDR_Significance_Counts")
+writeData(wb, "FDR_Significance_Counts", sig_summary)
+
+save_path <- "C:/Users/neete/Documents/Comprehensive_Tone_Phonation_Results_FDR.xlsx"
 saveWorkbook(wb, save_path, overwrite = TRUE)
 
 cat("\nDone! Baseline and Granular Phonation results saved successfully.\n")
+cat("The Excel file now includes:\n")
+cat("  - LRT results and effect size measures (semi-partial R²)\n")
+cat("  - FDR-corrected p-values for multiple comparison control\n")
+cat("  - Significance markers in plots now use FDR-corrected values\n")
+cat("  - Summary sheet with FDR significance counts across all measures\n")
+cat("\nOutput saved to: ", save_path, "\n")
