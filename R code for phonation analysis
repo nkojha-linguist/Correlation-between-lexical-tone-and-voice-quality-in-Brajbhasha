@@ -1,8 +1,9 @@
 ########################################################################################
 #####      TONE-PHONATION CORRELATION ANALYSIS: FINAL (pre-hoc INTEGRATED)         #####
+#####                    WITH CUSTOMIZABLE FIGURE DIMENSIONS & HIGH DPI              #####
 ########################################################################################
 
-# --- 0. LOAD LIBRARIES --- 
+# --- 0. LOAD LIBRARIES ---
 library(ggplot2)
 library(dplyr)
 library(tidyr)
@@ -16,9 +17,91 @@ library(purrr)
 library(r2glmm)
 library(performance)
 
+# ============================================================================
+# ==================== FIGURE CONFIGURATION SECTION =========================
+# ============================================================================
+
+# ---- USER-DEFINED FIGURE PARAMETERS ----
+# Modify values as needed
+
+# Set DPI (Dots Per Inch): Common values: 300 (journals), 600 (high quality), 1200 (maximum for line art)
+FIGURE_DPI <- 1200
+
+# Figure dimensions in INCHES (width x height)
+# A4 proportions: 8.27 x 11.69
+# Common journal figure sizes:
+#   - Single column: 3.5 x 5 inches
+#   - 1.5 column: 5 x 7 inches  
+#   - Full page: 7 x 10 inches
+FIGURE_WIDTH_INCHES <- 8.5      # Modify as needed
+FIGURE_HEIGHT_INCHES <- 5     # Modify as needed
+
+# Units for dimensions (inches or cm)
+FIGURE_UNITS <- "in"  # "in" for inches, "cm" for centimeters
+# Image format
+FIGURE_FORMAT <- "png"  # "png", "tiff", "jpg", "pdf"
+# For TIFF output (required by some journals) - additional compression settings
+TIFF_COMPRESSION <- "lzw"  # "none", "lzw", "jpeg", "zip", "rle"
+# Background settings
+FIGURE_BG <- "white"  # "white" or "transparent"
+
+# ============================================================================
+
+# --- Helper function to save high-resolution figures ---
+save_highres_figure <- function(plot_object, filename, 
+                                width = FIGURE_WIDTH_INCHES, 
+                                height = FIGURE_HEIGHT_INCHES,
+                                dpi = FIGURE_DPI,
+                                units = FIGURE_UNITS,
+                                format = FIGURE_FORMAT,
+                                bg = FIGURE_BG) {
+  
+  # Ensure directory exists
+  dir_path <- dirname(filename)
+  if (dir_path != "." && !dir.exists(dir_path)) {
+    dir.create(dir_path, recursive = TRUE, showWarnings = FALSE)
+  }
+  
+  # Full filename with extension
+  full_filename <- paste0(filename, ".", format)
+  
+  # Save based on format
+  if (format == "png") {
+    ggsave(full_filename, plot = plot_object, 
+           width = width, height = height, 
+           dpi = dpi, units = units, 
+           bg = bg,
+           limitsize = FALSE)  # Allow large files
+    
+  } else if (format == "tiff") {
+    ggsave(full_filename, plot = plot_object,
+           width = width, height = height,
+           dpi = dpi, units = units,
+           bg = bg,
+           compression = TIFF_COMPRESSION,
+           limitsize = FALSE)
+    
+  } else if (format == "pdf") {
+    ggsave(full_filename, plot = plot_object,
+           width = width, height = height,
+           units = units, limitsize = FALSE)
+    
+  } else if (format == "jpg" || format == "jpeg") {
+    ggsave(full_filename, plot = plot_object,
+           width = width, height = height,
+           dpi = dpi, units = units,
+           bg = bg, limitsize = FALSE)
+  }
+  
+  # Print file info
+  file_size <- file.info(full_filename)$size / (1024 * 1024)  # Size in MB
+  cat(sprintf("Saved: %s | Dimensions: %.1f x %.1f %s | DPI: %d | Size: %.2f MB\n", 
+              full_filename, width, height, units, dpi, file_size))
+}
+
 # --- 1. DATA LOADING ---
 sheet_name <- "Phase2 - Phonation"
-data_path <- "D:\\PHONATION DATA.xlsx"
+data_path <- "D:\\FRESH PHONATION OUTPUTS.xlsx"
 data <- readxl::read_excel(data_path, sheet = sheet_name)
 
 # Ensure 'Tone' is a factor with 'Neutral' as the reference level
@@ -153,6 +236,7 @@ contour_data <- data %>%
   drop_na(Value)
 
 # --- 4. CONTOUR PLOT & GRANULAR STATS FUNCTION (WITH LRT, EFFECT SIZE, AND FDR) ---
+# MODIFIED to use high-resolution saving function
 create_contour_plot <- function(measure_name, data_input) {
   
   pretty_name <- label_map[measure_name]
@@ -234,7 +318,6 @@ create_contour_plot <- function(measure_name, data_input) {
   }
   
   # Apply FDR correction separately for each dataset within the measure
-  # This controls false discovery rate across the 9 time points for each dataset
   if (nrow(significance_results) > 0) {
     significance_results <- significance_results %>%
       group_by(Dataset) %>%
@@ -273,7 +356,7 @@ create_contour_plot <- function(measure_name, data_input) {
           TRUE ~ "ns"
         ),
         Shape = case_when(
-          p_value_FDR < 0.001 ~ 24,        # Using FDR-corrected values for plotting
+          p_value_FDR < 0.001 ~ 24,
           p_value_FDR < 0.01 ~ 23,
           p_value_FDR < 0.05 ~ 22,
           p_value_FDR < 0.1 ~ 21,
@@ -290,7 +373,7 @@ create_contour_plot <- function(measure_name, data_input) {
       )
   }
   
-  # Plotting (using FDR-corrected significance markers)
+  # Create the base plot
   sig_symbols <- significance_results %>% filter(p_value_FDR < 0.1)
   plot_summary <- measure_data %>%
     group_by(Dataset, Timepoint, Tone) %>%
@@ -300,8 +383,8 @@ create_contour_plot <- function(measure_name, data_input) {
   
   p <- ggplot(plot_summary, aes(x = Timepoint, y = Mean_Value, color = Tone, group = Tone)) +
     geom_line(linewidth = 1) +
-    geom_point(size = 2) +
-    geom_errorbar(aes(ymin = Mean_Value - SE, ymax = Mean_Value + SE), width = 0.3, alpha = 0.7) +
+    geom_point(size = 3) +  # Slightly larger for high DPI
+    geom_errorbar(aes(ymin = Mean_Value - SE, ymax = Mean_Value + SE), width = 0.3, alpha = 0.7, linewidth = 0.5) +
     geom_point(data = sig_symbols, aes(x = Timepoint, y = Symbol_Position), 
                shape = sig_symbols$Shape, size = sig_symbols$Size, 
                color = "black", fill = "black", show.legend = FALSE, inherit.aes = FALSE) +
@@ -309,30 +392,75 @@ create_contour_plot <- function(measure_name, data_input) {
     scale_x_continuous(breaks = 1:9, labels = paste0("p", 1:9)) +
     scale_color_manual(values = c("Neutral" = "red", "Low" = "turquoise3")) +
     labs(title = paste("Contour Analysis:", pretty_name), 
-         x = "Time Point", y = paste(pretty_name, "Value"), color = "Tone",
-         caption = "Significance markers based on FDR-corrected p-values") +
-    theme_minimal(base_size = 12) +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"), 
-          legend.position = "top",
-          plot.caption = element_text(hjust = 0.5, size = 8, color = "gray40"))
+         x = "Time Point", y = paste(pretty_name, "Value (dB)"), color = "Tone",
+         caption = "Significance markers based on FDR-corrected p-values\n▲ p<0.001 ◆ p<0.01 ■ p<0.05 ● p<0.1") +
+    theme_minimal(base_size = 14) +  # Increased base size for high DPI
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+      legend.position = "top",
+      legend.text = element_text(size = 12),
+      legend.title = element_text(size = 12, face = "bold"),
+      axis.title = element_text(size = 12, face = "bold"),
+      axis.text = element_text(size = 10),
+      strip.text = element_text(size = 10, face = "bold"),
+      plot.caption = element_text(hjust = 0.5, size = 9, color = "gray40")
+    )
   
   final_plot <- plot_grid(p, 
-                          ggdraw() + draw_label("Significance (FDR-corrected): ▲p<0.001 ◆p<0.01 ■p<0.05 ●p<0.1", 
-                                                size = 12, color = "gray40"), 
+                          ggdraw() + draw_label("Significance (FDR-corrected): ▲ p<0.001 ◆ p<0.01 ■ p<0.05 ● p<0.1", 
+                                                size = 11, color = "gray40"), 
                           ncol = 1, rel_heights = c(10, 1))
   
+  # Print to screen (optional, comment out for large plots)
   print(final_plot)
-  ggsave(paste0("Contour_Plot_", measure_name, "_FDR.png"), final_plot, width = 14, height = 10, dpi = 300)
+  
+  # ========================================================================
+  # SAVE HIGH-RESOLUTION FIGURE USING THE CUSTOM FUNCTION
+  # ========================================================================
+  output_filename <- paste0("Contour_Plot_", measure_name, "_FDR")
+  
+  # Save with user-defined DPI and dimensions
+  save_highres_figure(
+    plot_object = final_plot,
+    filename = output_filename,
+    width = FIGURE_WIDTH_INCHES,
+    height = FIGURE_HEIGHT_INCHES,
+    dpi = FIGURE_DPI,
+    units = FIGURE_UNITS,
+    format = FIGURE_FORMAT,
+    bg = FIGURE_BG
+  )
+  
+  # Also save a journal-standard 600 DPI version as backup (optional)
+  if (FIGURE_DPI > 600) {
+    save_highres_figure(
+      plot_object = final_plot,
+      filename = paste0(output_filename, "_600dpi"),
+      width = FIGURE_WIDTH_INCHES,
+      height = FIGURE_HEIGHT_INCHES,
+      dpi = 600,
+      units = FIGURE_UNITS,
+      format = FIGURE_FORMAT,
+      bg = FIGURE_BG
+    )
+  }
   
   return(significance_results)
 }
 
 # --- 5. EXECUTION LOOP ---
 cat("\nStarting Phonation Contour Analysis for 10 Measures...\n")
+cat(sprintf("\nFigure Settings: %d DPI | %.1f x %.1f %s | Format: %s\n", 
+            FIGURE_DPI, FIGURE_WIDTH_INCHES, FIGURE_HEIGHT_INCHES, FIGURE_UNITS, FIGURE_FORMAT))
+cat("Note: High DPI images may take longer to generate and result in large file sizes.\n\n")
+
 results_list <- list()
 for (m in measures_to_analyze) {
   cat("Processing:", m, "...\n")
+  start_time <- Sys.time()
   results_list[[m]] <- create_contour_plot(m, contour_data)
+  end_time <- Sys.time()
+  cat(sprintf("  Completed in %.2f seconds\n", difftime(end_time, start_time, units = "secs")))
 }
 
 # --- 6. SAVE COMPREHENSIVE RESULTS TO EXCEL ---
@@ -383,7 +511,7 @@ for (m in names(results_list)) {
                             cols = p_uncorr_col, 
                             rows = 2:(nrow(results_list[[m]]) + 1),
                             rule = "<0.05",
-                            style = createStyle(bgFill = "#E6E6FA"))  # Lavender for uncorrected
+                            style = createStyle(bgFill = "#E6E6FA"))
     }
   } else {
     cat("Warning: No results for", m, "\n")
@@ -419,10 +547,18 @@ writeData(wb, "FDR_Significance_Counts", sig_summary)
 save_path <- "D:/Comprehensive_Tone_Phonation_Results_FDR.xlsx"
 saveWorkbook(wb, save_path, overwrite = TRUE)
 
-cat("\nDone! Baseline and Granular Phonation results saved successfully.\n")
-cat("The Excel file now includes:\n")
+cat("\n============================================================================\n")
+cat("Done! Analysis complete.\n")
+cat("\n--- OUTPUT SUMMARY ---\n")
+cat(sprintf("Excel results saved to: %s\n", save_path))
+cat(sprintf("\nFigure Settings used:\n"))
+cat(sprintf("  - DPI: %d\n", FIGURE_DPI))
+cat(sprintf("  - Dimensions: %.1f x %.1f %s\n", FIGURE_WIDTH_INCHES, FIGURE_HEIGHT_INCHES, FIGURE_UNITS))
+cat(sprintf("  - Format: %s\n", FIGURE_FORMAT))
+cat(sprintf("  - Background: %s\n", FIGURE_BG))
+cat("\nThe Excel file now includes:\n")
 cat("  - LRT results and effect size measures (semi-partial R²)\n")
 cat("  - FDR-corrected p-values for multiple comparison control\n")
-cat("  - Significance markers in plots now use FDR-corrected values\n")
+cat("  - Significance markers in plots use FDR-corrected values\n")
 cat("  - Summary sheet with FDR significance counts across all measures\n")
-cat("\nOutput saved to: ", save_path, "\n")
+cat("\n============================================================================\n")
